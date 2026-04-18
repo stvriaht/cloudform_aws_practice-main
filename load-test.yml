@@ -1,0 +1,44 @@
+config:
+  target: 'https://GANTI_DENGAN_API_GATEWAY_URL/v1'
+  phases:
+    - duration: 30
+      arrivalRate: 2
+      name: Warm up (2 req/detik)
+    - duration: 60
+      arrivalRate: 20
+      name: Normal load (20 req/detik)
+    - duration: 60
+      arrivalRate: 100
+      name: High traffic (100 req/detik)
+    - duration: 30
+      arrivalRate: 5
+      name: Cool down
+  defaults:
+    headers:
+      Content-Type: 'application/json'
+
+scenarios:
+  - name: 'GET data (70% traffic)'
+    weight: 70
+    flow:
+      - get:
+          url: '/data'
+          expect:
+            - statusCode: 200
+
+  - name: 'POST then GET (30% traffic)'
+    weight: 30
+    flow:
+      - post:
+          url: '/data'
+          json:
+            name: 'load-test-{{ $randomString() }}'
+            value: '{{ $randomNumber(1, 100) }}'
+            category: 'sensor'
+          expect:
+            - statusCode: 201
+      - think: 0.5
+      - get:
+          url: '/data?limit=5'
+          expect:
+            - statusCode: 200

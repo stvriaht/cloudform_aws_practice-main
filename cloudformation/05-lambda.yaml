@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'STACK 5 - Lambda Functions Python 3.12: POST handler dan GET handler'
+
+Parameters:
+  DBPassword:
+    Type: String
+    NoEcho: true
+
+Resources:
+
+  # ─────────────────────────────────────────────
+  # IAM ROLE untuk Lambda
+  # ─────────────────────────────────────────────
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: myapp-lambda-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Akses VPC (wajib jika Lambda di dalam VPC untuk akses RDS)
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: LambdaPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # CloudWatch Logs
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+              # S3 Read Access
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::myapp-storage-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:aws:s3:::myapp-storage-${AWS::AccountId}-${AWS::Region}/*'
+              # SSM Parameter Store (opsional untuk secrets)
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/myapp/*'
+
+  # ─────────────────────────────────────────────
+  # LAMBDA FUNCTION — POST Handler
+  # Trigger: API Gateway POST /data
+  # Fungsi: Insert data ke RDS PostgreSQL
+  # ─────────────────────────────────────────────
+  LambdaPostFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: myapp-post-handler
+      Description: 'Insert data ke RDS PostgreSQL via POST request'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30                          # Max 30 detik
+      MemorySize: 256                      # 256MB cukup untuk query sederhana
+      # ReservedConcurrentExecutions: 50     # Batasi max 50 concurrent (proteksi RDS)
+      Code:
+        ZipFile: |
+          # Placeholder — kode asli di-deploy via GitHub Actions
+          # File: lambda/post_handler/handler.py
+          import json
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': json.dumps({'message': 'placeholder'})}
+      Environment:
+        Variables:
+          DB_HOST: !ImportValue myapp-DBEndpoint
+          DB_PORT: '5432'
+          DB_NAME: myappdb
+          DB_USER: myappuser
+          DB_PASSWORD: !Ref DBPassword
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue myapp-PrivateSubnet1Id
+        SecurityGroupIds:
+          - !ImportValue myapp-LambdaSGId
+      Tags:
+        - Key: Name
+          Value: myapp-post-handler
+
+  # ─────────────────────────────────────────────
+  # LAMBDA FUNCTION — GET Handler
+  # Trigger: API Gateway GET /data
+  # Fungsi: Query data + statistik dari RDS PostgreSQL
+  # ─────────────────────────────────────────────
+  LambdaGetFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: myapp-get-handler
+      Description: 'Ambil data & statistik dari RDS PostgreSQL via GET request'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      # ReservedConcurrentExecutions: 100    # GET bisa lebih banyak concurrent
+      Code:
+        ZipFile: |
+          # Placeholder — kode asli di-deploy via GitHub Actions
+          import json
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': json.dumps({'data': [], 'statistics': []})}
+      Environment:
+        Variables:
+          DB_HOST: !ImportValue myapp-DBEndpoint
+          DB_PORT: '5432'
+          DB_NAME: myappdb
+          DB_USER: myappuser
+          DB_PASSWORD: !Ref DBPassword
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue myapp-PrivateSubnet1Id
+        SecurityGroupIds:
+          - !ImportValue myapp-LambdaSGId
+      Tags:
+        - Key: Name
+          Value: myapp-get-handler
+
+  # ─────────────────────────────────────────────
+  # CLOUDWATCH LOG GROUPS (retain 14 hari)
+  # ─────────────────────────────────────────────
+  PostLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/myapp-post-handler
+      RetentionInDays: 14
+
+  GetLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/myapp-get-handler
+      RetentionInDays: 14
+
+  # ─────────────────────────────────────────────
+  # CLOUDWATCH ALARMS
+  # ─────────────────────────────────────────────
+  PostLambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: myapp-post-lambda-errors
+      AlarmDescription: 'Alert jika Lambda POST error > 5 dalam 5 menit'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LambdaPostFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+# ─────────────────────────────────────────────
+# OUTPUTS
+# ─────────────────────────────────────────────
+Outputs:
+  PostLambdaArn:
+    Description: ARN Lambda POST Handler
+    Value: !GetAtt LambdaPostFunction.Arn
+    Export:
+      Name: myapp-PostLambdaArn
+
+  GetLambdaArn:
+    Description: ARN Lambda GET Handler
+    Value: !GetAtt LambdaGetFunction.Arn
+    Export:
+      Name: myapp-GetLambdaArn
+
+  PostLambdaName:
+    Description: Nama Lambda POST
+    Value: !Ref LambdaPostFunction
+    Export:
+      Name: myapp-PostLambdaName
+
+  GetLambdaName:
+    Description: Nama Lambda GET
+    Value: !Ref LambdaGetFunction
+    Export:
+      Name: myapp-GetLambdaName

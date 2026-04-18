@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'STACK 3 - Storage: S3 Bucket (App Storage) + EFS (Shared Filesystem)'
+
+Resources:
+
+  # ─────────────────────────────────────────────
+  # S3 BUCKET — Penyimpanan file aplikasi
+  # ─────────────────────────────────────────────
+  AppStorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'myapp-storage-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled                   # Versioning untuk backup file
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256        # Enkripsi default (gratis)
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true       # Semua akses harus via IAM
+      LifecycleConfiguration:
+        Rules:
+          - Id: MoveOldFilesToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA  # Hemat 50% setelah 30 hari
+            NoncurrentVersionTransitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+            NoncurrentVersionExpirationInDays: 90  # Hapus versi lama >90 hari
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - POST
+              - PUT
+            AllowedOrigins:
+              - '*'                       # Ganti dengan domain Amplify saat production
+            MaxAge: 3600
+      Tags:
+        - Key: Name
+          Value: myapp-storage
+
+  # ─────────────────────────────────────────────
+  # EFS — Shared Filesystem untuk Elastic Beanstalk
+  # Multiple instance bisa mount filesystem yang sama
+  # ─────────────────────────────────────────────
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: myapp-efs-sg
+      GroupDescription: 'Security Group untuk EFS'
+      VpcId: !ImportValue myapp-VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: 10.0.0.0/16            # NFS port dari dalam VPC
+          Description: NFS dari Beanstalk instances
+      Tags:
+        - Key: Name
+          Value: myapp-efs-sg
+
+  EFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose     # Cocok untuk web app
+      ThroughputMode: bursting            # Gratis burst, hemat biaya
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_30_DAYS   # Hemat biaya data jarang diakses
+        - TransitionToPrimaryStorageClass: AFTER_1_ACCESS  # Balik ke standar jika diakses
+      FileSystemTags:
+        - Key: Name
+          Value: myapp-efs
+
+  # Mount Target di Private Subnet 1
+  EFSMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !ImportValue myapp-PrivateSubnet1Id
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  # Mount Target di Private Subnet 2 (untuk HA)
+  EFSMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !ImportValue myapp-PrivateSubnet2Id
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+# ─────────────────────────────────────────────
+# OUTPUTS
+# ─────────────────────────────────────────────
+Outputs:
+  AppStorageBucketName:
+    Description: Nama S3 Bucket untuk storage aplikasi
+    Value: !Ref AppStorageBucket
+    Export:
+      Name: myapp-AppStorageBucketName
+
+  AppStorageBucketArn:
+    Description: ARN S3 Bucket
+    Value: !GetAtt AppStorageBucket.Arn
+    Export:
+      Name: myapp-AppStorageBucketArn
+
+  EFSFileSystemId:
+    Description: EFS File System ID
+    Value: !Ref EFSFileSystem
+    Export:
+      Name: myapp-EFSFileSystemId
+
+  EFSDnsName:
+    Description: EFS DNS Name untuk mount
+    Value: !Sub '${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com'
+    Export:
+      Name: myapp-EFSDnsName

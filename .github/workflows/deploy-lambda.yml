@@ -1,0 +1,171 @@
+name: '⚡ Deploy Lambda Functions (Python)'
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'lambda/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-southeast-1
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1: Test Python Lambda
+  # ─────────────────────────────────────────────
+  test:
+    name: Run Lambda Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Test Dependencies
+        run: |
+          pip install pytest pytest-cov psycopg2-binary
+
+      - name: Run Tests
+        run: |
+          cd lambda
+          echo "=== GET Handler Tests ==="
+          PYTHONPATH=./get_handler python -m pytest tests/test_get.py -v --tb=short
+          echo "=== POST Handler Tests ==="
+          PYTHONPATH=./post_handler python -m pytest tests/test_post.py -v --tb=short
+          echo "✅ All Lambda unit tests passed!"
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Deploy Lambda Functions
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy Lambda to AWS
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Package Lambda POST Handler
+        run: |
+          echo "=== Packaging POST Lambda ==="
+          cd lambda/post_handler
+          
+          # Install dependencies ke folder lokal
+          pip install psycopg2-binary -t ./ -q
+          
+          # Buat ZIP (Gunakan * untuk menjamin file ada di root ZIP)
+          zip -r ../../post-handler-${{ github.sha }}.zip * \
+            -x "*.pyc" \
+            -x "__pycache__/*" \
+            -x "*.egg-info/*"
+          cd ../..
+          
+          echo "POST Lambda package size:"
+          ls -lh post-handler-${{ github.sha }}.zip
+
+      - name: Package Lambda GET Handler
+        run: |
+          echo "=== Packaging GET Lambda ==="
+          cd lambda/get_handler
+          pip install psycopg2-binary -t ./ -q
+          # Buat ZIP (Gunakan * untuk menjamin file ada di root ZIP)
+          zip -r ../../get-handler-${{ github.sha }}.zip * \
+            -x "*.pyc" \
+            -x "__pycache__/*" \
+            -x "*.egg-info/*"
+          cd ../..
+          
+          echo "GET Lambda package size:"
+          ls -lh get-handler-${{ github.sha }}.zip
+
+      - name: Upload to S3
+        run: |
+          BUCKET="myapp-artifacts-${{ secrets.AWS_ACCOUNT_ID }}"
+          
+          aws s3 cp post-handler-${{ github.sha }}.zip \
+            s3://${BUCKET}/lambda/post-handler.zip
+          
+          aws s3 cp get-handler-${{ github.sha }}.zip \
+            s3://${BUCKET}/lambda/get-handler.zip
+          
+          echo "Lambda packages uploaded to S3"
+
+      - name: Update Lambda POST Function
+        run: |
+          BUCKET="myapp-artifacts-${{ secrets.AWS_ACCOUNT_ID }}"
+          
+          aws lambda update-function-code \
+            --function-name myapp-post-handler \
+            --s3-bucket ${BUCKET} \
+            --s3-key lambda/post-handler.zip \
+            --region ${{ env.AWS_REGION }}
+          
+          echo "Waiting for POST Lambda update..."
+          aws lambda wait function-updated \
+            --function-name myapp-post-handler \
+            --region ${{ env.AWS_REGION }}
+          
+          echo "✅ POST Lambda updated!"
+
+      - name: Update Lambda GET Function
+        run: |
+          BUCKET="myapp-artifacts-${{ secrets.AWS_ACCOUNT_ID }}"
+          
+          aws lambda update-function-code \
+            --function-name myapp-get-handler \
+            --s3-bucket ${BUCKET} \
+            --s3-key lambda/get-handler.zip \
+            --region ${{ env.AWS_REGION }}
+          
+          echo "Waiting for GET Lambda update..."
+          aws lambda wait function-updated \
+            --function-name myapp-get-handler \
+            --region ${{ env.AWS_REGION }}
+          
+          echo "✅ GET Lambda updated!"
+
+      - name: Smoke Test Lambda Functions
+        run: |
+          echo "=== Smoke Testing Lambda Functions ==="
+          
+          # Test POST Lambda
+          POST_RESULT=$(aws lambda invoke \
+            --function-name myapp-post-handler \
+            --payload '{"httpMethod":"POST","body":"{\"name\":\"ci-test\",\"value\":99.9,\"category\":\"test\"}","headers":{"Content-Type":"application/json"}}' \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/post-response.json \
+            --query 'StatusCode' \
+            --output text)
+          echo "POST Lambda invoke status: $POST_RESULT"
+          cat /tmp/post-response.json
+          
+          # Test GET Lambda
+          GET_RESULT=$(aws lambda invoke \
+            --function-name myapp-get-handler \
+            --payload '{"httpMethod":"GET","queryStringParameters":{"limit":"5"}}' \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/get-response.json \
+            --query 'StatusCode' \
+            --output text)
+          echo "GET Lambda invoke status: $GET_RESULT"
+          cat /tmp/get-response.json
+          
+          echo "✅ Lambda smoke tests complete!"

@@ -1,0 +1,139 @@
+name: '🖥️ Deploy Backend (Elastic Beanstalk)'
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-southeast-1
+  EB_APP_NAME: myapp-backend
+  EB_ENV_NAME: myapp-backend-env
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1: Run Tests
+  # ─────────────────────────────────────────────
+  test:
+    name: Run Backend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Run Tests
+        working-directory: ./backend
+        run: npm test
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Deploy ke Elastic Beanstalk
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to Elastic Beanstalk
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Production Dependencies
+        working-directory: ./backend
+        run: npm ci --omit=dev
+
+      - name: Create Deployment Package
+        run: |
+          cd backend
+          # Buat ZIP tanpa node_modules (lebih cepat, Beanstalk install sendiri)
+          zip -r ../backend-${{ github.sha }}.zip . \
+            -x "*.test.js" \
+            -x "tests/*" \
+            -x ".env*" \
+            -x "*.md"
+          echo "Package size:"
+          ls -lh ../backend-${{ github.sha }}.zip
+
+      - name: Upload Artifact to S3
+        run: |
+          BUCKET="myapp-artifacts-${{ secrets.AWS_ACCOUNT_ID }}"
+          aws s3 cp backend-${{ github.sha }}.zip \
+            s3://${BUCKET}/backend/backend-${{ github.sha }}.zip
+          echo "Uploaded: s3://${BUCKET}/backend/backend-${{ github.sha }}.zip"
+
+      - name: Create Elastic Beanstalk Application Version
+        run: |
+          BUCKET="myapp-artifacts-${{ secrets.AWS_ACCOUNT_ID }}"
+          aws elasticbeanstalk create-application-version \
+            --application-name ${{ env.EB_APP_NAME }} \
+            --version-label "v-${{ github.sha }}" \
+            --description "Deploy from GitHub Actions - commit ${{ github.sha }}" \
+            --source-bundle S3Bucket=${BUCKET},S3Key=backend/backend-${{ github.sha }}.zip \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Deploy to Environment
+        run: |
+          aws elasticbeanstalk update-environment \
+            --application-name ${{ env.EB_APP_NAME }} \
+            --environment-name ${{ env.EB_ENV_NAME }} \
+            --version-label "v-${{ github.sha }}" \
+            --region ${{ env.AWS_REGION }}
+          echo "Deployment triggered!"
+
+      - name: Wait for Environment Update
+        run: |
+          echo "Waiting for environment to update..."
+          aws elasticbeanstalk wait environment-updated \
+            --application-name ${{ env.EB_APP_NAME }} \
+            --environment-name ${{ env.EB_ENV_NAME }} \
+            --region ${{ env.AWS_REGION }}
+          echo "Environment updated!"
+
+      - name: Verify Deployment Health
+        run: |
+          HEALTH=$(aws elasticbeanstalk describe-environments \
+            --application-name ${{ env.EB_APP_NAME }} \
+            --environment-name ${{ env.EB_ENV_NAME }} \
+            --query 'Environments[0].Health' \
+            --output text)
+          
+          EB_URL=$(aws cloudformation describe-stacks \
+            --stack-name myapp-beanstalk \
+            --query 'Stacks[0].Outputs[?OutputKey==`BeanstalkURL`].OutputValue' \
+            --output text)
+          
+          echo "Environment Health: $HEALTH"
+          echo "Beanstalk URL: $EB_URL"
+          
+          # Health check endpoint
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${EB_URL}/health" || echo "000")
+          echo "Health check HTTP status: $HTTP_STATUS"
+          
+          if [ "$HEALTH" != "Green" ] && [ "$HEALTH" != "Ok" ]; then
+            echo "❌ Environment health is: $HEALTH"
+            exit 1
+          fi
+          echo "✅ Deployment successful!"

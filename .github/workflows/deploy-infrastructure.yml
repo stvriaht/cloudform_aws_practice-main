@@ -1,0 +1,201 @@
+name: '🏗️ Deploy Infrastructure (CloudFormation)'
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudformation/**'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Stack action'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - delete
+
+env:
+  AWS_REGION: ap-southeast-1
+
+jobs:
+  validate:
+    name: Validate CloudFormation Templates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate All Templates
+        run: |
+          echo "=== Validating CloudFormation Templates ==="
+          for file in cloudformation/*.yaml; do
+            echo "✅ Validating: $file"
+            aws cloudformation validate-template \
+              --template-body file://$file \
+              --region ${{ env.AWS_REGION }}
+          done
+          echo "All templates valid!"
+
+  deploy-infrastructure:
+    name: Deploy CloudFormation Stacks
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event.inputs.action != 'delete'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Ensure Artifact Bucket Exists
+        run: |
+          BUCKET="myapp-artifacts-${{ secrets.AWS_ACCOUNT_ID }}"
+          if ! aws s3 ls "s3://${BUCKET}" 2>/dev/null; then
+            echo "Creating artifact bucket: ${BUCKET}"
+            aws s3 mb s3://${BUCKET} --region ${{ env.AWS_REGION }}
+            aws s3api put-bucket-versioning \
+              --bucket ${BUCKET} \
+              --versioning-configuration Status=Enabled
+          else
+            echo "Bucket already exists: ${BUCKET}"
+          fi
+
+      - name: Upload Templates to S3
+        run: |
+          BUCKET="myapp-artifacts-${{ secrets.AWS_ACCOUNT_ID }}"
+          aws s3 sync cloudformation/ s3://${BUCKET}/cloudformation/ \
+            --exclude "*" --include "*.yaml" \
+            --region ${{ env.AWS_REGION }}
+          echo "Templates uploaded to S3"
+
+      - name: Deploy Stack 1 - VPC
+        run: |
+          echo "=== Deploying VPC Stack ==="
+          aws cloudformation deploy \
+            --template-file cloudformation/01-vpc.yaml \
+            --stack-name myapp-vpc \
+            --region ${{ env.AWS_REGION }} \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+          
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name myapp-vpc \
+            --query 'Stacks[0].StackStatus' --output text)
+          echo "VPC Stack Status: $STATUS"
+
+      - name: Deploy Stack 2 - RDS
+        run: |
+          echo "=== Deploying RDS Stack ==="
+          aws cloudformation deploy \
+            --template-file cloudformation/02-rds.yaml \
+            --stack-name myapp-rds \
+            --region ${{ env.AWS_REGION }} \
+            --parameter-overrides DBPassword=${{ secrets.DB_PASSWORD }} \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Deploy Stack 3 - Storage
+        run: |
+          echo "=== Deploying Storage Stack ==="
+          aws cloudformation deploy \
+            --template-file cloudformation/03-storage.yaml \
+            --stack-name myapp-storage \
+            --region ${{ env.AWS_REGION }} \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Deploy Stack 4 - Elastic Beanstalk
+        run: |
+          echo "=== Deploying Beanstalk Stack ==="
+          aws cloudformation deploy \
+            --template-file cloudformation/04-beanstalk.yaml \
+            --stack-name myapp-beanstalk \
+            --region ${{ env.AWS_REGION }} \
+            --parameter-overrides DBPassword=${{ secrets.DB_PASSWORD }} \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Package & Upload Lambda Code
+        run: |
+          echo "=== Packaging Lambda Functions ==="
+          BUCKET="myapp-artifacts-${{ secrets.AWS_ACCOUNT_ID }}"
+          
+          # POST Lambda
+          cd lambda/post_handler
+          pip install psycopg2-binary -t ./ -q
+          zip -r ../../post-handler.zip . -x "*.pyc" "__pycache__/*"
+          cd ../..
+          aws s3 cp post-handler.zip s3://${BUCKET}/lambda/post-handler.zip
+          
+          # GET Lambda
+          cd lambda/get_handler
+          pip install psycopg2-binary -t ./ -q
+          zip -r ../../get-handler.zip . -x "*.pyc" "__pycache__/*"
+          cd ../..
+          aws s3 cp get-handler.zip s3://${BUCKET}/lambda/get-handler.zip
+          
+          echo "Lambda packages uploaded"
+
+      - name: Deploy Stack 5 - Lambda
+        run: |
+          echo "=== Deploying Lambda Stack ==="
+          aws cloudformation deploy \
+            --template-file cloudformation/05-lambda.yaml \
+            --stack-name myapp-lambda \
+            --region ${{ env.AWS_REGION }} \
+            --parameter-overrides DBPassword=${{ secrets.DB_PASSWORD }} \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Deploy Stack 6 - API Gateway
+        run: |
+          echo "=== Deploying API Gateway Stack ==="
+          aws cloudformation deploy \
+            --template-file cloudformation/06-apigateway.yaml \
+            --stack-name myapp-apigateway \
+            --region ${{ env.AWS_REGION }} \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Print All Stack Outputs
+        run: |
+          echo "======================================"
+          echo "       DEPLOYMENT COMPLETE!           "
+          echo "======================================"
+          
+          for stack in myapp-vpc myapp-rds myapp-storage myapp-beanstalk myapp-lambda myapp-apigateway; do
+            echo ""
+            echo "--- $stack ---"
+            STATUS=$(aws cloudformation describe-stacks \
+              --stack-name $stack \
+              --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "NOT_FOUND")
+            echo "Status: $STATUS"
+          done
+          
+          echo ""
+          echo "=== API Gateway Endpoint ==="
+          aws cloudformation describe-stacks \
+            --stack-name myapp-apigateway \
+            --query 'Stacks[0].Outputs[?OutputKey==`APIEndpoint`].OutputValue' \
+            --output text
+          
+          echo ""
+          echo "=== Beanstalk URL ==="
+          aws cloudformation describe-stacks \
+            --stack-name myapp-beanstalk \
+            --query 'Stacks[0].Outputs[?OutputKey==`BeanstalkURL`].OutputValue' \
+            --output text

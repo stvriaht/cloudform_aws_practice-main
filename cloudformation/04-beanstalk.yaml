@@ -1,0 +1,272 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'STACK 4 - Elastic Beanstalk Node.js with Application Load Balancer & Auto Scaling'
+
+Parameters:
+  DBPassword:
+    Type: String
+    NoEcho: true
+
+Resources:
+
+  # ─────────────────────────────────────────────
+  # IAM ROLES
+  # ─────────────────────────────────────────────
+  BeanstalkServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: myapp-beanstalk-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: elasticbeanstalk.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
+
+  BeanstalkEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: myapp-beanstalk-ec2-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: BeanstalkS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::myapp-storage-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:aws:s3:::myapp-storage-${AWS::AccountId}-${AWS::Region}/*'
+
+  BeanstalkInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: myapp-beanstalk-instance-profile
+      Roles:
+        - !Ref BeanstalkEC2Role
+
+  # ─────────────────────────────────────────────
+  # ELASTIC BEANSTALK APPLICATION
+  # ─────────────────────────────────────────────
+  BeanstalkApp:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: myapp-backend
+      Description: 'Node.js Express Backend — Dashboard API'
+      ResourceLifecycleConfig:
+        ServiceRole: !GetAtt BeanstalkServiceRole.Arn
+        VersionLifecycleConfig:
+          MaxCountRule:
+            Enabled: true
+            MaxCount: 5                   # Simpan max 5 versi (hemat storage)
+            DeleteSourceFromS3: true
+
+  # ─────────────────────────────────────────────
+  # ELASTIC BEANSTALK ENVIRONMENT
+  # ─────────────────────────────────────────────
+  BeanstalkEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName: !Ref BeanstalkApp
+      EnvironmentName: myapp-backend-env
+      Description: 'Production Environment — Node.js 20 + ALB + Auto Scaling'
+      # Platform: Node.js 20 di Amazon Linux 2023
+      SolutionStackName: '64bit Amazon Linux 2023 v6.10.1 running Node.js 20'
+      OptionSettings:
+
+        # ── VPC & Subnet ──────────────────────────
+        - Namespace: aws:ec2:vpc
+          OptionName: VPCId
+          Value: !ImportValue myapp-VpcId
+
+        - Namespace: aws:ec2:vpc
+          OptionName: Subnets                       # EC2 di private
+          Value: !Join
+            - ','
+            - - !ImportValue myapp-PrivateSubnet1Id
+              - !ImportValue myapp-PrivateSubnet2Id
+
+        - Namespace: aws:ec2:vpc
+          OptionName: ELBSubnets                    # ALB di public
+          Value: !Join
+            - ','
+            - - !ImportValue myapp-PublicSubnet1Id
+              - !ImportValue myapp-PublicSubnet2Id
+
+        - Namespace: aws:ec2:vpc
+          OptionName: ELBScheme
+          Value: public                             # Internet-facing load balancer
+
+        # ── Instance Type ─────────────────────────
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: InstanceType
+          Value: t3.micro                           # Free Tier eligible
+
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value: !Ref BeanstalkInstanceProfile
+
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: SecurityGroups
+          Value: !ImportValue myapp-BeanstalkSGId
+
+        # ── Auto Scaling ── High Traffic ──────────
+        - Namespace: aws:autoscaling:asg
+          OptionName: MinSize
+          Value: '1'                               # Free Tier: 1 instance
+
+        - Namespace: aws:autoscaling:asg
+          OptionName: MaxSize
+          Value: '4'                               # Scale out hingga 4 instance
+
+        - Namespace: aws:autoscaling:asg
+          OptionName: Availability Zones
+          Value: Any 2                             # Spread di 2 AZ
+
+        - Namespace: aws:autoscaling:trigger
+          OptionName: MeasureName
+          Value: CPUUtilization
+
+        - Namespace: aws:autoscaling:trigger
+          OptionName: Unit
+          Value: Percent
+
+        - Namespace: aws:autoscaling:trigger
+          OptionName: UpperThreshold
+          Value: '70'                              # Scale UP jika CPU > 70%
+
+        - Namespace: aws:autoscaling:trigger
+          OptionName: LowerThreshold
+          Value: '25'                              # Scale DOWN jika CPU < 25%
+
+        - Namespace: aws:autoscaling:trigger
+          OptionName: BreachDuration
+          Value: '5'                               # Butuh 5 menit sebelum trigger
+
+        # ── Load Balancer ─────────────────────────
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: EnvironmentType
+          Value: LoadBalanced
+
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: LoadBalancerType
+          Value: application                       # Application Load Balancer (ALB)
+
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: ServiceRole
+          Value: !GetAtt BeanstalkServiceRole.Arn
+
+        # ── Health Check ──────────────────────────
+        - Namespace: aws:elasticbeanstalk:healthreporting:system
+          OptionName: SystemType
+          Value: enhanced                          # Enhanced health reporting
+
+        - Namespace: aws:elasticbeanstalk:application
+          OptionName: Application Healthcheck URL
+          Value: /health                           # Health check untuk Enhanced Health Agent
+
+        # ── ALB Target Group Health Check ─────────
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: HealthCheckPath
+          Value: /health                           # Health check untuk ALB Target Group
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: Port
+          Value: '8080'
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: Protocol
+          Value: HTTP
+
+        # ── Rolling Deploy ─────────────────────────
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: DeploymentPolicy
+          Value: RollingWithAdditionalBatch        # Zero downtime deployment
+
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: BatchSizeType
+          Value: Percentage
+
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: BatchSize
+          Value: '25'                              # Deploy 25% instance sekaligus
+
+        # ── Environment Variables ─────────────────
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: NODE_ENV
+          Value: production
+
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: PORT
+          Value: '8080'
+
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DB_HOST
+          Value: !ImportValue myapp-DBEndpoint
+
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DB_PORT
+          Value: '5432'
+
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DB_NAME
+          Value: myappdb
+
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DB_USER
+          Value: myappuser
+
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: DB_PASSWORD
+          Value: !Ref DBPassword
+
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: S3_BUCKET
+          Value: !Sub 'myapp-storage-${AWS::AccountId}-${AWS::Region}'
+
+        # ── Logs ke CloudWatch ────────────────────
+        - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+          OptionName: StreamLogs
+          Value: 'true'
+
+        - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+          OptionName: RetentionInDays
+          Value: '14'
+
+# ─────────────────────────────────────────────
+# OUTPUTS
+# ─────────────────────────────────────────────
+Outputs:
+  BeanstalkURL:
+    Description: URL Elastic Beanstalk Environment
+    Value: !Sub 'http://${BeanstalkEnvironment.EndpointURL}'
+    Export:
+      Name: myapp-BeanstalkURL
+
+  BeanstalkAppName:
+    Description: Nama Aplikasi Beanstalk
+    Value: !Ref BeanstalkApp
+    Export:
+      Name: myapp-BeanstalkAppName
+
+  BeanstalkEnvName:
+    Description: Nama Environment Beanstalk
+    Value: myapp-backend-env
+    Export:
+      Name: myapp-BeanstalkEnvName

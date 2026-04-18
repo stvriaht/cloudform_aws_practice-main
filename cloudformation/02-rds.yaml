@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'STACK 2 - RDS PostgreSQL Free Tier (db.t3.micro, 20GB gp2)'
+
+Parameters:
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Password untuk RDS PostgreSQL (min 8 karakter)
+
+Resources:
+
+  # ─────────────────────────────────────────────
+  # SECURITY GROUPS
+  # ─────────────────────────────────────────────
+
+  # Security Group untuk Beanstalk (sumber koneksi ke RDS)
+  BeanstalkSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: myapp-beanstalk-sg
+      GroupDescription: 'Security Group untuk Elastic Beanstalk EC2'
+      VpcId: !ImportValue myapp-VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP dari internet via ALB
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 10.0.0.0/16
+          Description: App port dari dalam VPC
+      Tags:
+        - Key: Name
+          Value: myapp-beanstalk-sg
+
+  # Security Group untuk Lambda
+  LambdaSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: myapp-lambda-sg
+      GroupDescription: 'Security Group untuk Lambda Functions'
+      VpcId: !ImportValue myapp-VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound
+      Tags:
+        - Key: Name
+          Value: myapp-lambda-sg
+
+  # Security Group untuk RDS (hanya terima dari Beanstalk & Lambda)
+  RDSSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: myapp-rds-sg
+      GroupDescription: 'Security Group untuk RDS PostgreSQL'
+      VpcId: !ImportValue myapp-VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref BeanstalkSG
+          Description: PostgreSQL dari Beanstalk
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref LambdaSG
+          Description: PostgreSQL dari Lambda
+      Tags:
+        - Key: Name
+          Value: myapp-rds-sg
+
+  # ─────────────────────────────────────────────
+  # RDS SUBNET GROUP
+  # ─────────────────────────────────────────────
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: myapp-db-subnet-group
+      DBSubnetGroupDescription: 'Subnet Group untuk RDS (Private Subnets)'
+      SubnetIds:
+        - !ImportValue myapp-PrivateSubnet1Id
+        - !ImportValue myapp-PrivateSubnet2Id
+      Tags:
+        - Key: Name
+          Value: myapp-db-subnet-group
+
+  # ─────────────────────────────────────────────
+  # RDS PostgreSQL Instance
+  # Free Tier: db.t3.micro, 20GB gp2, Single-AZ
+  # Untuk HA: ubah MultiAZ ke true, ganti ke db.t3.small
+  # ─────────────────────────────────────────────
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: myapp-postgres
+      DBInstanceClass: db.t3.micro          # Free Tier eligible
+      Engine: postgres
+      EngineVersion: '16.13'
+      MasterUsername: myappuser
+      MasterUserPassword: !Ref DBPassword
+      DBName: myappdb
+      AllocatedStorage: '20'               # Free Tier: max 20GB
+      MaxAllocatedStorage: 100             # Auto scaling storage hingga 100GB
+      StorageType: gp2
+      # StorageEncrypted: false           # Free Tier: tidak support, jangan diset
+      MultiAZ: false                       # Ubah ke true untuk High Availability
+      PubliclyAccessible: false            # Private, tidak bisa diakses dari internet
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RDSSG
+      BackupRetentionPeriod: 0            # Free Tier: harus 0 (tidak support backup otomatis)
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      DeletionProtection: true            # Proteksi dari hapus tidak sengaja
+      EnablePerformanceInsights: false    # Hemat biaya
+      AutoMinorVersionUpgrade: true
+      Tags:
+        - Key: Name
+          Value: myapp-rds-postgres
+
+# ─────────────────────────────────────────────
+# OUTPUTS
+# ─────────────────────────────────────────────
+Outputs:
+  DBEndpoint:
+    Description: RDS PostgreSQL Endpoint
+    Value: !GetAtt RDSInstance.Endpoint.Address
+    Export:
+      Name: myapp-DBEndpoint
+
+  DBPort:
+    Description: RDS PostgreSQL Port
+    Value: !GetAtt RDSInstance.Endpoint.Port
+    Export:
+      Name: myapp-DBPort
+
+  BeanstalkSGId:
+    Description: Beanstalk Security Group ID
+    Value: !Ref BeanstalkSG
+    Export:
+      Name: myapp-BeanstalkSGId
+
+  LambdaSGId:
+    Description: Lambda Security Group ID
+    Value: !Ref LambdaSG
+    Export:
+      Name: myapp-LambdaSGId
+
+  RDSSGId:
+    Description: RDS Security Group ID
+    Value: !Ref RDSSG
+    Export:
+      Name: myapp-RDSSGId

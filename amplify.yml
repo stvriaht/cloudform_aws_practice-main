@@ -1,0 +1,23 @@
+version: 1
+applications:
+  - appRoot: frontend
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - node --version
+            - npm --version
+            - npm ci
+        build:
+          commands:
+            - echo "Setting environment variables..."
+            - echo "VITE_API_URL=$VITE_API_URL" > .env
+            - npm run build
+            - echo "Build complete!"
+      artifacts:
+        baseDirectory: dist
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*
