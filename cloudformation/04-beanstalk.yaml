@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'STACK 4 - Elastic Beanstalk Node.js with Application Load Balancer & Auto Scaling'
+Description: 'STACK 4 - Elastic Beanstalk Node.js (Learner Lab Compatible)'
 
 Parameters:
   DBPassword:
@@ -15,28 +15,38 @@ Resources:
     Type: AWS::ElasticBeanstalk::Application
     Properties:
       ApplicationName: myapp-backend
-      Description: 'Node.js Express Backend — Dashboard API'
-      ResourceLifecycleConfig:
-        ServiceRole: arn:aws:iam::581967380620:role/LabRole
-        VersionLifecycleConfig:
-          MaxCountRule:
-            Enabled: true
-            MaxCount: 5
-            DeleteSourceFromS3: true
+      Description: 'Node.js Express Backend'
 
   # ─────────────────────────────────────────────
   # ELASTIC BEANSTALK ENVIRONMENT
   # ─────────────────────────────────────────────
   BeanstalkEnvironment:
     Type: AWS::ElasticBeanstalk::Environment
+    DependsOn:
+      - BeanstalkApp
     Properties:
       ApplicationName: !Ref BeanstalkApp
       EnvironmentName: myapp-backend-env
-      Description: 'Production Environment — Node.js 20 + ALB + Auto Scaling'
-      SolutionStackName: '64bit Amazon Linux 2023 v6.10.1 running Node.js 20'
+      SolutionStackName: '64bit Amazon Linux 2 v5.11.2 running Node.js 18'
+      Tier:
+        Name: WebServer
+        Type: Standard
       OptionSettings:
 
-        # ── VPC & Subnet ──────────────────────────
+        # ── Instance Configuration ─────────────────
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: InstanceType
+          Value: t3.micro
+
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value: LabInstanceProfile
+
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: EC2KeyName
+          Value: vockey
+
+        # ── VPC Configuration ──────────────────────
         - Namespace: aws:ec2:vpc
           OptionName: VPCId
           Value: !ImportValue myapp-VpcId
@@ -45,8 +55,8 @@ Resources:
           OptionName: Subnets
           Value: !Join
             - ','
-            - - !ImportValue myapp-PrivateSubnet1Id
-              - !ImportValue myapp-PrivateSubnet2Id
+            - - !ImportValue myapp-PublicSubnet1Id
+              - !ImportValue myapp-PublicSubnet2Id
 
         - Namespace: aws:ec2:vpc
           OptionName: ELBSubnets
@@ -59,53 +69,20 @@ Resources:
           OptionName: ELBScheme
           Value: public
 
-        # ── Instance Type ─────────────────────────
-        - Namespace: aws:autoscaling:launchconfiguration
-          OptionName: InstanceType
-          Value: t3.micro
-
-        - Namespace: aws:autoscaling:launchconfiguration
-          OptionName: IamInstanceProfile
-          Value: arn:aws:iam::581967380620:instance-profile/LabInstanceProfile
-
         - Namespace: aws:autoscaling:launchconfiguration
           OptionName: SecurityGroups
           Value: !ImportValue myapp-BeanstalkSGId
 
-        # ── Auto Scaling ──────────────────────────
+        # ── Auto Scaling ───────────────────────────
         - Namespace: aws:autoscaling:asg
           OptionName: MinSize
           Value: '1'
 
         - Namespace: aws:autoscaling:asg
           OptionName: MaxSize
-          Value: '4'
+          Value: '2'
 
-        - Namespace: aws:autoscaling:asg
-          OptionName: Availability Zones
-          Value: Any 2
-
-        - Namespace: aws:autoscaling:trigger
-          OptionName: MeasureName
-          Value: CPUUtilization
-
-        - Namespace: aws:autoscaling:trigger
-          OptionName: Unit
-          Value: Percent
-
-        - Namespace: aws:autoscaling:trigger
-          OptionName: UpperThreshold
-          Value: '70'
-
-        - Namespace: aws:autoscaling:trigger
-          OptionName: LowerThreshold
-          Value: '25'
-
-        - Namespace: aws:autoscaling:trigger
-          OptionName: BreachDuration
-          Value: '5'
-
-        # ── Load Balancer ─────────────────────────
+        # ── Load Balancer ──────────────────────────
         - Namespace: aws:elasticbeanstalk:environment
           OptionName: EnvironmentType
           Value: LoadBalanced
@@ -114,20 +91,19 @@ Resources:
           OptionName: LoadBalancerType
           Value: application
 
+        # ── Health Check ───────────────────────────
         - Namespace: aws:elasticbeanstalk:environment
           OptionName: ServiceRole
-          Value: arn:aws:iam::581967380620:role/LabRole
+          Value: LabRole
 
-        # ── Health Check ──────────────────────────
         - Namespace: aws:elasticbeanstalk:healthreporting:system
           OptionName: SystemType
-          Value: enhanced
+          Value: basic
 
         - Namespace: aws:elasticbeanstalk:application
           OptionName: Application Healthcheck URL
           Value: /health
 
-        # ── ALB Target Group Health Check ─────────
         - Namespace: aws:elasticbeanstalk:environment:process:default
           OptionName: HealthCheckPath
           Value: /health
@@ -136,24 +112,7 @@ Resources:
           OptionName: Port
           Value: '8080'
 
-        - Namespace: aws:elasticbeanstalk:environment:process:default
-          OptionName: Protocol
-          Value: HTTP
-
-        # ── Rolling Deploy ─────────────────────────
-        - Namespace: aws:elasticbeanstalk:command
-          OptionName: DeploymentPolicy
-          Value: RollingWithAdditionalBatch
-
-        - Namespace: aws:elasticbeanstalk:command
-          OptionName: BatchSizeType
-          Value: Percentage
-
-        - Namespace: aws:elasticbeanstalk:command
-          OptionName: BatchSize
-          Value: '25'
-
-        # ── Environment Variables ─────────────────
+        # ── Environment Variables ──────────────────
         - Namespace: aws:elasticbeanstalk:application:environment
           OptionName: NODE_ENV
           Value: production
@@ -182,23 +141,15 @@ Resources:
           OptionName: DB_PASSWORD
           Value: !Ref DBPassword
 
-        - Namespace: aws:elasticbeanstalk:application:environment
-          OptionName: S3_BUCKET
-          Value: !Sub 'myapp-storage-${AWS::AccountId}-${AWS::Region}'
-
-        # ── Logs ke CloudWatch ────────────────────
+        # ── Logging ─────────────────────────────────
         - Namespace: aws:elasticbeanstalk:cloudwatch:logs
           OptionName: StreamLogs
-          Value: 'true'
-
-        - Namespace: aws:elasticbeanstalk:cloudwatch:logs
-          OptionName: RetentionInDays
-          Value: '14'
+          Value: 'false'
 
 Outputs:
   BeanstalkURL:
     Description: URL Elastic Beanstalk Environment
-    Value: !Sub 'http://${BeanstalkEnvironment.EndpointURL}'
+    Value: !GetAtt BeanstalkEnvironment.EndpointURL
     Export:
       Name: myapp-BeanstalkURL
 
@@ -210,6 +161,6 @@ Outputs:
 
   BeanstalkEnvName:
     Description: Nama Environment Beanstalk
-    Value: myapp-backend-env
+    Value: !Ref BeanstalkEnvironment
     Export:
       Name: myapp-BeanstalkEnvName
