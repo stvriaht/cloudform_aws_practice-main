@@ -136,20 +136,62 @@ jobs:
           echo "=== Packaging Lambda Functions ==="
           BUCKET="myapp-artifacts-${{ secrets.AWS_ACCOUNT_ID }}"
           
-          # POST Lambda
+          # ========== POST LAMBDA ==========
           cd lambda/post_handler
-          pip install psycopg2-binary --platform manylinux2014_x86_64 --target ./ --only-binary=:all: -q
-          zip -r ../../post-handler.zip . -x "*.pyc" "__pycache__/*"
-          cd ../..
-          aws s3 cp post-handler.zip s3://${BUCKET}/lambda/post-handler.zip
           
-          # GET Lambda
-          cd lambda/get_handler
-          pip install psycopg2-binary --platform manylinux2014_x86_64 --target ./ --only-binary=:all: -q
-          zip -r ../../get-handler.zip . -x "*.pyc" "__pycache__/*"
+          # HAPUS SEMUA file lamanya
+          rm -rf psycopg2 psycopg2_binary psycopg2_binary.libs *.dist-info __pycache__
+          rm -f *.pyc
+          
+          # Install FRESH untuk Linux (force rebuild)
+          pip install --platform manylinux2014_x86_64 \
+            --target ./ \
+            --only-binary=:all: \
+            --no-cache-dir \
+            --force-reinstall \
+            --upgrade \
+            psycopg2-binary
+          
+          # HAPUS file .dll dan file Windows (kalau masih ada)
+          find . -name "*.dll" -type f -delete
+          find . -name "*.pyd" -type f -delete
+          find . -name "*win_amd64*" -type d -exec rm -rf {} + 2>/dev/null || true
+          
+          # Zip
+          zip -r ../../post-handler.zip . -x "*.pyc" "__pycache__/*" "*.pyc" "*.dll" "*.pyd"
           cd ../..
-          aws s3 cp get-handler.zip s3://${BUCKET}/lambda/get-handler.zip
-    
+          
+          # Upload ke S3
+          aws s3 cp post-handler.zip s3://${BUCKET}/lambda/post-handler.zip --region ${{ env.AWS_REGION }}
+          
+          # ========== GET LAMBDA ==========
+          cd lambda/get_handler
+          
+          # HAPUS SEMUA file lamanya
+          rm -rf psycopg2 psycopg2_binary psycopg2_binary.libs *.dist-info __pycache__
+          rm -f *.pyc
+          
+          # Install FRESH untuk Linux
+          pip install --platform manylinux2014_x86_64 \
+            --target ./ \
+            --only-binary=:all: \
+            --no-cache-dir \
+            --force-reinstall \
+            --upgrade \
+            psycopg2-binary
+          
+          # HAPUS file .dll dan file Windows
+          find . -name "*.dll" -type f -delete
+          find . -name "*.pyd" -type f -delete
+          find . -name "*win_amd64*" -type d -exec rm -rf {} + 2>/dev/null || true
+          
+          # Zip
+          zip -r ../../get-handler.zip . -x "*.pyc" "__pycache__/*" "*.pyc" "*.dll" "*.pyd"
+          cd ../..
+          
+          # Upload ke S3
+          aws s3 cp get-handler.zip s3://${BUCKET}/lambda/get-handler.zip --region ${{ env.AWS_REGION }}
+          
           echo "Lambda packages uploaded"
 
       - name: Deploy Stack 5 - Lambda
