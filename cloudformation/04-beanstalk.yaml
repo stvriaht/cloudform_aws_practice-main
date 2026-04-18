@@ -18,7 +18,7 @@ Resources:
       Description: 'Node.js Express Backend'
 
   # ─────────────────────────────────────────────
-  # ELASTIC BEANSTALK ENVIRONMENT
+  # ELASTIC BEANSTALK ENVIRONMENT - SINGLE INSTANCE (lebih simple)
   # ─────────────────────────────────────────────
   BeanstalkEnvironment:
     Type: AWS::ElasticBeanstalk::Environment
@@ -38,19 +38,22 @@ Resources:
           OptionName: InstanceType
           Value: t3.micro
 
+        # Gunakan instance profile default dari Learner Lab
         - Namespace: aws:autoscaling:launchconfiguration
           OptionName: IamInstanceProfile
           Value: LabInstanceProfile
 
-        - Namespace: aws:autoscaling:launchconfiguration
-          OptionName: EC2KeyName
-          Value: vockey
+        # HAPUS EC2KeyName - tidak wajib untuk Learner Lab
+        # - Namespace: aws:autoscaling:launchconfiguration
+        #   OptionName: EC2KeyName
+        #   Value: vockey
 
         # ── VPC Configuration ──────────────────────
         - Namespace: aws:ec2:vpc
           OptionName: VPCId
           Value: !ImportValue myapp-VpcId
 
+        # Gunakan PUBLIC subnets (biar lebih mudah)
         - Namespace: aws:ec2:vpc
           OptionName: Subnets
           Value: !Join
@@ -73,23 +76,19 @@ Resources:
           OptionName: SecurityGroups
           Value: !ImportValue myapp-BeanstalkSGId
 
-        # ── Auto Scaling ───────────────────────────
+        # ── Auto Scaling (Single Instance) ─────────
         - Namespace: aws:autoscaling:asg
           OptionName: MinSize
           Value: '1'
 
         - Namespace: aws:autoscaling:asg
           OptionName: MaxSize
-          Value: '2'
+          Value: '1'
 
-        # ── Load Balancer ──────────────────────────
+        # ── Load Balancer (Single Instance tidak perlu ALB)
         - Namespace: aws:elasticbeanstalk:environment
           OptionName: EnvironmentType
-          Value: LoadBalanced
-
-        - Namespace: aws:elasticbeanstalk:environment
-          OptionName: LoadBalancerType
-          Value: application
+          Value: SingleInstance
 
         # ── Health Check ───────────────────────────
         - Namespace: aws:elasticbeanstalk:environment
@@ -103,14 +102,6 @@ Resources:
         - Namespace: aws:elasticbeanstalk:application
           OptionName: Application Healthcheck URL
           Value: /health
-
-        - Namespace: aws:elasticbeanstalk:environment:process:default
-          OptionName: HealthCheckPath
-          Value: /health
-
-        - Namespace: aws:elasticbeanstalk:environment:process:default
-          OptionName: Port
-          Value: '8080'
 
         # ── Environment Variables ──────────────────
         - Namespace: aws:elasticbeanstalk:application:environment
@@ -144,7 +135,12 @@ Resources:
         # ── Logging ─────────────────────────────────
         - Namespace: aws:elasticbeanstalk:cloudwatch:logs
           OptionName: StreamLogs
-          Value: 'false'
+          OptionValue: 'false'
+
+        # ── Root Volume Size ────────────────────────
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: RootVolumeSize
+          Value: '10'
 
 Outputs:
   BeanstalkURL:
