@@ -9,41 +9,6 @@ Parameters:
 Resources:
 
   # ─────────────────────────────────────────────
-  # IAM ROLE untuk Lambda
-  # ─────────────────────────────────────────────
-  LambdaExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: myapp-lambda-execution-role
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-      Policies:
-        - PolicyName: LambdaPermissions
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: 'arn:aws:logs:*:*:*'
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:ListBucket
-                Resource:
-                  - !Sub 'arn:aws:s3:::myapp-storage-${AWS::AccountId}-${AWS::Region}'
-                  - !Sub 'arn:aws:s3:::myapp-storage-${AWS::AccountId}-${AWS::Region}/*'
-
-  # ─────────────────────────────────────────────
   # LAMBDA FUNCTION — POST Handler
   # ─────────────────────────────────────────────
   LambdaPostFunction:
@@ -53,7 +18,7 @@ Resources:
       Description: 'Insert data ke RDS PostgreSQL via POST request'
       Runtime: python3.12
       Handler: handler.lambda_handler
-      Role: !GetAtt LambdaExecutionRole.Arn
+      Role: arn:aws:iam::581967380620:role/LabRole
       Timeout: 30
       MemorySize: 256
       Code:
@@ -85,7 +50,7 @@ Resources:
       Description: 'Ambil data & statistik dari RDS PostgreSQL via GET request'
       Runtime: python3.12
       Handler: handler.lambda_handler
-      Role: !GetAtt LambdaExecutionRole.Arn
+      Role: arn:aws:iam::581967380620:role/LabRole
       Timeout: 30
       MemorySize: 256
       Code:
@@ -121,26 +86,6 @@ Resources:
     Properties:
       LogGroupName: /aws/lambda/myapp-get-handler
       RetentionInDays: 14
-
-  # ─────────────────────────────────────────────
-  # CLOUDWATCH ALARMS
-  # ─────────────────────────────────────────────
-  PostLambdaErrorAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: myapp-post-lambda-errors
-      AlarmDescription: 'Alert jika Lambda POST error > 5 dalam 5 menit'
-      MetricName: Errors
-      Namespace: AWS/Lambda
-      Dimensions:
-        - Name: FunctionName
-          Value: !Ref LambdaPostFunction
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 5
-      ComparisonOperator: GreaterThanThreshold
-      TreatMissingData: notBreaching
 
 Outputs:
   PostLambdaArn:
