@@ -138,18 +138,18 @@ jobs:
           
           # POST Lambda
           cd lambda/post_handler
-          pip install psycopg2-binary -t ./ -q
+          pip install psycopg2-binary --platform manylinux2014_x86_64 --target ./ --only-binary=:all: -q
           zip -r ../../post-handler.zip . -x "*.pyc" "__pycache__/*"
           cd ../..
           aws s3 cp post-handler.zip s3://${BUCKET}/lambda/post-handler.zip
           
           # GET Lambda
           cd lambda/get_handler
-          pip install psycopg2-binary -t ./ -q
+          pip install psycopg2-binary --platform manylinux2014_x86_64 --target ./ --only-binary=:all: -q
           zip -r ../../get-handler.zip . -x "*.pyc" "__pycache__/*"
           cd ../..
           aws s3 cp get-handler.zip s3://${BUCKET}/lambda/get-handler.zip
-          
+    
           echo "Lambda packages uploaded"
 
       - name: Deploy Stack 5 - Lambda
