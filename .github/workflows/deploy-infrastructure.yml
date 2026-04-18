@@ -99,26 +99,26 @@ jobs:
             --query 'Stacks[0].StackStatus' --output text)
           echo "VPC Stack Status: $STATUS"
 
-      - name: Deploy Stack 2 - RDS
-        run: |
-          echo "=== Deploying RDS Stack ==="
-          aws cloudformation deploy \
-            --template-file cloudformation/02-rds.yaml \
-            --stack-name myapp-rds \
-            --region ${{ env.AWS_REGION }} \
-            --parameter-overrides DBPassword=${{ secrets.DB_PASSWORD }} \
-            --capabilities CAPABILITY_IAM \
-            --no-fail-on-empty-changeset
+      #- name: Deploy Stack 2 - RDS
+      #  run: |
+      #    echo "=== Deploying RDS Stack ==="
+      #    aws cloudformation deploy \
+      #      --template-file cloudformation/02-rds.yaml \
+      #      --stack-name myapp-rds \
+      #      --region ${{ env.AWS_REGION }} \
+      #      --parameter-overrides DBPassword=${{ secrets.DB_PASSWORD }} \
+      #      --capabilities CAPABILITY_IAM \
+      #      --no-fail-on-empty-changeset
 
-      - name: Deploy Stack 3 - Storage
-        run: |
-          echo "=== Deploying Storage Stack ==="
-          aws cloudformation deploy \
-            --template-file cloudformation/03-storage.yaml \
-            --stack-name myapp-storage \
-            --region ${{ env.AWS_REGION }} \
-            --capabilities CAPABILITY_IAM \
-            --no-fail-on-empty-changeset
+      #- name: Deploy Stack 3 - Storage
+      #  run: |
+      #    echo "=== Deploying Storage Stack ==="
+      #    aws cloudformation deploy \
+      #      --template-file cloudformation/03-storage.yaml \
+      #      --stack-name myapp-storage \
+      #      --region ${{ env.AWS_REGION }} \
+      #      --capabilities CAPABILITY_IAM \
+      #      --no-fail-on-empty-changeset
 
       #- name: Deploy Stack 4 - Elastic Beanstalk
       #  run: |
