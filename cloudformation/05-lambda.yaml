@@ -23,21 +23,18 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        # Akses VPC (wajib jika Lambda di dalam VPC untuk akses RDS)
         - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
         - PolicyName: LambdaPermissions
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # CloudWatch Logs
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: 'arn:aws:logs:*:*:*'
-              # S3 Read Access
               - Effect: Allow
                 Action:
                   - s3:GetObject
@@ -45,17 +42,9 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:s3:::myapp-storage-${AWS::AccountId}-${AWS::Region}'
                   - !Sub 'arn:aws:s3:::myapp-storage-${AWS::AccountId}-${AWS::Region}/*'
-              # SSM Parameter Store (opsional untuk secrets)
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                  - ssm:GetParameters
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/myapp/*'
 
   # ─────────────────────────────────────────────
   # LAMBDA FUNCTION — POST Handler
-  # Trigger: API Gateway POST /data
-  # Fungsi: Insert data ke RDS PostgreSQL
   # ─────────────────────────────────────────────
   LambdaPostFunction:
     Type: AWS::Lambda::Function
@@ -65,16 +54,11 @@ Resources:
       Runtime: python3.12
       Handler: handler.lambda_handler
       Role: !GetAtt LambdaExecutionRole.Arn
-      Timeout: 30                          # Max 30 detik
-      MemorySize: 256                      # 256MB cukup untuk query sederhana
-      # ReservedConcurrentExecutions: 50     # Batasi max 50 concurrent (proteksi RDS)
+      Timeout: 30
+      MemorySize: 256
       Code:
-        ZipFile: |
-          # Placeholder — kode asli di-deploy via GitHub Actions
-          # File: lambda/post_handler/handler.py
-          import json
-          def lambda_handler(event, context):
-              return {'statusCode': 200, 'body': json.dumps({'message': 'placeholder'})}
+        S3Bucket: !Sub 'myapp-artifacts-${AWS::AccountId}'
+        S3Key: lambda/post-handler.zip
       Environment:
         Variables:
           DB_HOST: !ImportValue myapp-DBEndpoint
@@ -93,8 +77,6 @@ Resources:
 
   # ─────────────────────────────────────────────
   # LAMBDA FUNCTION — GET Handler
-  # Trigger: API Gateway GET /data
-  # Fungsi: Query data + statistik dari RDS PostgreSQL
   # ─────────────────────────────────────────────
   LambdaGetFunction:
     Type: AWS::Lambda::Function
@@ -106,13 +88,9 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Timeout: 30
       MemorySize: 256
-      # ReservedConcurrentExecutions: 100    # GET bisa lebih banyak concurrent
       Code:
-        ZipFile: |
-          # Placeholder — kode asli di-deploy via GitHub Actions
-          import json
-          def lambda_handler(event, context):
-              return {'statusCode': 200, 'body': json.dumps({'data': [], 'statistics': []})}
+        S3Bucket: !Sub 'myapp-artifacts-${AWS::AccountId}'
+        S3Key: lambda/get-handler.zip
       Environment:
         Variables:
           DB_HOST: !ImportValue myapp-DBEndpoint
@@ -130,7 +108,7 @@ Resources:
           Value: myapp-get-handler
 
   # ─────────────────────────────────────────────
-  # CLOUDWATCH LOG GROUPS (retain 14 hari)
+  # CLOUDWATCH LOG GROUPS
   # ─────────────────────────────────────────────
   PostLambdaLogGroup:
     Type: AWS::Logs::LogGroup
@@ -164,9 +142,6 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
 
-# ─────────────────────────────────────────────
-# OUTPUTS
-# ─────────────────────────────────────────────
 Outputs:
   PostLambdaArn:
     Description: ARN Lambda POST Handler
