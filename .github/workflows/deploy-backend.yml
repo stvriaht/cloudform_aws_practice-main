@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  AWS_REGION: ap-southeast-1
+  AWS_REGION: us-east-1
   EB_APP_NAME: myapp-backend
   EB_ENV_NAME: myapp-backend-env
 
